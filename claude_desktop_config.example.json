@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "mcp-experiments": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "/ABSOLUTE/PATH/TO/mcp-experiments",
+        "mcp-server"
+      ]
+    }
+  }
+}
