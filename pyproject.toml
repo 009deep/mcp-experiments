@@ -9,6 +9,8 @@ description = "Local MCP server experiments in Python"
 requires-python = ">=3.11"
 dependencies = [
     "mcp[cli]>=1.0.0",
+    "jsonschema>=4.0.0",
+    "anthropic>=0.40.0",
 ]
 
 [project.optional-dependencies]
@@ -19,9 +21,11 @@ dev = [
 
 [project.scripts]
 mcp-server = "mcp_server.server:main"
+mcp-client = "mcp_client.client:main"
+mcp-agent = "mcp_client.agent:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mcp_server"]
+packages = ["src/mcp_server", "src/mcp_client"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
