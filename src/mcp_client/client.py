@@ -3,7 +3,7 @@ import json
 from contextlib import asynccontextmanager
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client, StdioServerParameters
-from jsonschema import validate, ValidationError
+from mcp_client.guardrails import validate_tool_arguments
 
 
 SERVER_PARAMS = StdioServerParameters(
@@ -34,10 +34,9 @@ async def call_tool(
     schema: dict | None = None,
 ):
     if schema is not None:
-        try:
-            validate(instance=arguments, schema=schema)
-        except ValidationError as e:
-            print(f"Invalid arguments: {e.message}")
+        is_valid, error_msg = validate_tool_arguments(arguments, schema)
+        if not is_valid:
+            print(f"Invalid arguments: {error_msg}")
             return None
 
     result = await session.call_tool(name, arguments)

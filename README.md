@@ -12,15 +12,21 @@ A local [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server, 
 mcp-experiments/
 ├── src/
 │   ├── mcp_server/
-│   │   ├── server.py              # MCP server entry point
+│   │   ├── server.py              # MCP server entry point (with server-side validation)
 │   │   └── tools/
 │   │       └── example.py         # Built-in tools: echo, add
 │   └── mcp_client/
 │       ├── client.py              # MCP client + interactive REPL
-│       └── agent.py               # Claude agentic loop using MCP tools
+│       ├── agent.py               # Claude agentic loop using MCP tools
+│       ├── guardrails.py          # Static (deterministic) guardrail functions
+│       └── ai_guardrails.py       # Dynamic guardrails: AIGuardrail interface + BedrockGuardrail
 ├── tests/
 │   ├── test_server.py             # Unit tests for tool handlers
-│   └── test_client.py             # Unit tests for client with mocked session
+│   ├── test_client.py             # Unit tests for client with mocked session
+│   └── test_guardrails.py         # Unit tests for all static guardrail functions
+├── docs/
+│   ├── guardrails.md              # Full guardrails design with pipeline diagram
+│   └── message-roles.md           # Claude vs OpenAI message role reference
 ├── pyproject.toml
 ├── claude_desktop_config.example.json
 └── copy_of_claude_config.json     # Merged Claude Desktop config
@@ -231,13 +237,59 @@ You ──prompt──▶ Claude (with MCP tool schemas)
 
 ---
 
+## Guardrails
+
+The agent loop includes layered guardrails at every stage of the pipeline. See [`docs/guardrails.md`](docs/guardrails.md) for the full design with diagrams.
+
+### Static (deterministic) guardrails
+
+Built into the agent loop — no external API calls required. Implemented in `src/mcp_client/guardrails.py`.
+
+| Stage | What is checked |
+|-------|-----------------|
+| User input | Empty/oversized prompts; known injection patterns (warn only) |
+| Message build | Strict user/assistant role alternation; `tool_use_id` round-trip validity |
+| Pre-API | Loop iteration cap (default 10); model-parameter compatibility (Haiku/Fable edge cases); token budget estimate |
+| Tool call parsing | Tool name allowlist; input type; argument schema validation |
+| MCP execution | Per-call timeout (30 s); server-side schema validation and exception handling |
+| Tool result | Size truncation (8 K chars); injection pattern scan; UTF-8 encoding safety |
+| Final output | Empty response guard; output length cap (20 K chars) |
+
+### Dynamic (AI-powered) guardrails — AWS Bedrock
+
+Semantic checks backed by cloud APIs are wired as placeholders in `src/mcp_client/ai_guardrails.py`. To activate:
+
+1. Create a guardrail in the [AWS Console](https://console.aws.amazon.com/bedrock/home#/guardrails) or via `bedrock:CreateGuardrail`.
+2. Set env vars:
+   ```bash
+   export BEDROCK_GUARDRAIL_ID="<your-guardrail-id>"
+   export BEDROCK_GUARDRAIL_VERSION="DRAFT"   # or a published version
+   export AWS_DEFAULT_REGION="us-east-1"
+   ```
+3. Install boto3 and pass the guardrail to `run_agent()`:
+   ```bash
+   uv add boto3
+   ```
+   ```python
+   from mcp_client.ai_guardrails import BedrockGuardrail
+   from mcp_client.agent import run_agent
+
+   await run_agent("my prompt", guardrail=BedrockGuardrail())
+   ```
+
+Bedrock checks run at three stages: user input (Stage 1), tool results before they are fed back to Claude (Stage 6 — detects indirect prompt injection and PII in tool output), and the final model response (Stage 7).
+
+Without configuration, the guardrail defaults to `NoopGuardrail` which skips all external calls — safe for local development.
+
+---
+
 ## Running tests
 
 ```bash
 uv run pytest
 ```
 
-Tests cover tool handlers (`test_server.py`) and the client's validation + call logic with a mocked MCP session (`test_client.py`).
+Tests cover tool handlers (`test_server.py`), the client's validation + call logic with a mocked MCP session (`test_client.py`), and all static guardrail functions (`test_guardrails.py`).
 
 ---
 
