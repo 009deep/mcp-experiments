@@ -613,3 +613,103 @@ All other guardrails (G1.x, G3.x, G5.x, G6.x, G7.x) operate on plain strings or 
 6. Trigger **G5.2/G5.3**: send a malformed `call_tool` request via `mcp-client`; confirm `[ERROR]` from server, not a crash
 7. AI guardrail path: mock `BedrockGuardrail.check_input` to raise `GuardrailError`; confirm `run_agent()` propagates it before reaching the API call
 8. OpenAI adapter: run `run_agent("add 3 and 7", adapter=OpenAIAdapter())` against a local Ollama instance; confirm tool round-trip completes
+
+---
+
+## Complete Pipeline Diagram
+
+```
+                    ┌─────────────────────────────────────────────────────────────────────────────────┐
+                    │                        MCP AGENT GUARDRAIL PIPELINE                              │
+                    └─────────────────────────────────────────────────────────────────────────────────┘
+
+  STATIC (deterministic)                      PIPELINE                      DYNAMIC (AI / API-based)
+  ──────────────────────                      ────────                      ─────────────────────────
+
+                                           ┌──────────┐
+                                           │   USER   │
+                                           │  PROMPT  │
+                                           └────┬─────┘
+                                                │
+ ┌──────────────────────────────────┐           ▼           ┌───────────────────────────────────────┐
+ │ G1.1  empty check                │   ┌──────────────┐    │ ◆ Bedrock  ApplyGuardrail (INPUT)     │
+ │ G1.2  length cap                 ├──►│   STAGE 1    │◄───┤ ◆ Azure    Prompt Shield               │
+ │ G1.3  injection pattern scan     │   │  User Input  │    │ ◆ OpenAI   Moderation                  │
+ └──────────────────────────────────┘   └──────┬───────┘    │ ◆ LlamaGuard (local / offline)        │
+                                               │            └───────────────────────────────────────┘
+ ╔══════════════════════ agent loop — stages 2–6 repeat each tool call ═══════════════════════════╗
+ ║                                             │                                                   ║
+ ║ ┌──────────────────────────────────┐        ▼                                                   ║
+ ║ │ G2.1  role alternation           │  ┌──────────────┐                                          ║
+ ║ │ G2.2  tool_use_id round-trip     ├─►│   STAGE 2    │  structural only — no dynamic guard      ║
+ ║ │ G2.3  empty tool_results guard   │  │  Msg Build   │                                          ║
+ ║ └──────────────────────────────────┘  └──────┬───────┘                                          ║
+ ║                                             │                                                   ║
+ ║ ┌──────────────────────────────────┐        ▼                                                   ║
+ ║ │ G3.1  iteration cap              │  ┌──────────────┐                                          ║
+ ║ │ G3.2  model-param compat         ├─►│   STAGE 3    │  structural only — no dynamic guard      ║
+ ║ │ G3.3  stop reason guard          │  │   Pre-API    │                                          ║
+ ║ │ G3.4  token budget estimate      │  └──────┬───────┘                                          ║
+ ║ └──────────────────────────────────┘         │                                                  ║
+ ║                                              ▼                                                  ║
+ ║                                      ┌──────────────┐                                           ║
+ ║                                      │  CLAUDE API  │                                           ║
+ ║                                      └──────┬───────┘                                           ║
+ ║                                             │                                                   ║
+ ║                              ┌──────────────┴──────────────┐                                    ║
+ ║                           tool_use                     end_turn ───────────────────────────► exit║
+ ║                              │                                                                   ║
+ ║ ┌──────────────────────────────────┐        ▼                                                   ║
+ ║ │ G4.1  tool name allowlist        │  ┌──────────────┐                                          ║
+ ║ │ G4.2  input type check           ├─►│   STAGE 4    │  structural only — no dynamic guard      ║
+ ║ │ G4.3  arg schema validation      │  │  Tool Parse  │                                          ║
+ ║ └──────────────────────────────────┘  └──────┬───────┘                                          ║
+ ║                                             │                                                   ║
+ ║ ┌──────────────────────────────────┐        ▼                                                   ║
+ ║ │ G5.1  per-call timeout           │  ┌──────────────┐                                          ║
+ ║ │ G5.2  server-side schema valid.  ├─►│   STAGE 5    │  execution only — no dynamic guard       ║
+ ║ │ G5.3  server-side exceptions     │  │   MCP Tool   │                                          ║
+ ║ └──────────────────────────────────┘  └──────┬───────┘                                          ║
+ ║                                             │                                                   ║
+ ║ ┌──────────────────────────────────┐        ▼         ┌───────────────────────────────────────┐ ║
+ ║ │ G6.1  result size truncation     │  ┌──────────────┐│ ◆ Azure  Prompt Shield (documents=)  │ ║
+ ║ │ G6.2  injection pattern scan     ├─►│   STAGE 6    │◄┤ ◆ Bedrock INPUT + PII redaction      │ ║
+ ║ │ G6.3  UTF-8 encoding safety      │  │  Tool Result ││ ◆ LlamaGuard (local / offline)        │ ║
+ ║ └──────────────────────────────────┘  └──────┬───────┘└───────────────────────────────────────┘ ║
+ ║                                             │                                                   ║
+ ╚═════════════════════════════════════════════╩═══════════════════════════════════════════════════╝
+                                      ↺ loop → Stage 2  (exits on end_turn)
+                                             │
+ ┌──────────────────────────────────┐        ▼           ┌───────────────────────────────────────┐
+ │ G7.1  empty response guard       │  ┌──────────────┐  │ ◆ Bedrock  ApplyGuardrail (OUTPUT)    │
+ │ G7.2  output length cap          ├─►│   STAGE 7    │◄─┤ ◆ Azure    Content Safety              │
+ └──────────────────────────────────┘  │ Final Output │  │ ◆ OpenAI   Moderation                  │
+                                       └──────┬───────┘  │ ◆ LlamaGuard (local / offline)        │
+                                             │           └───────────────────────────────────────┘
+                                             ▼
+                                        ┌──────────┐
+                                        │   USER   │
+                                        └──────────┘
+
+Legend
+  ──────────────────────────────────────────────────────────────────────────────────────────────
+  ◆                    dynamic (AI / API-based) guardrail call
+  ╔══╗ / ╚══╝          agent loop boundary — everything inside repeats per tool call
+  ↺                    loop back arrow (Stage 6 output feeds Stage 2 of next iteration)
+  exit                 end_turn breaks the loop and falls through to Stage 7
+  structural only      guard enforces API protocol shape — no semantic ML check needed
+  execution only       guard wraps the actual tool invocation — no semantic ML check needed
+
+Dynamic guard coverage by stage
+  ──────────────────────────────────────────────────────────────────────────────────────────────
+  Stage 1  Bedrock · Azure Prompt Shield · OpenAI Moderation · LlamaGuard
+           (all four — broadest threat surface, first line of defense)
+
+  Stage 6  Azure Prompt Shield (documents=) · Bedrock INPUT+PII · LlamaGuard
+           OpenAI Moderation excluded — it detects harm categories, not injection
+           Azure Prompt Shield preferred — documents= param provides context-aware
+           injection detection against the original user intent
+
+  Stage 7  Bedrock · Azure Content Safety · OpenAI Moderation · LlamaGuard
+           Azure Prompt Shield excluded — injection detection not relevant on output
+```
